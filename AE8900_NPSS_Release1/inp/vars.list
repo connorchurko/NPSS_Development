@@ -1,0 +1,27 @@
+// -----------------------------------------------------------------------------
+// Set On-Design Ambient Condition
+// -----------------------------------------------------------------------------
+   //Amb.MN  	= 0.60;
+   //Amb.alt  = 25000.0;
+   Amb.MN = 0.0;
+   Amb.alt = 0.0;
+   Amb.dTs  = 0.0;
+   SPEC_DAY = "STD";
+
+   // High Pressure Compressor Technology Curve
+   CmpH.S_map.PRdes   = 2.5; // 0.8 <= HPCPRD <= 2.7
+   CmpH.S_map.NcDes   = 1.00;
+   CmpH.S_map.effDes  = 0.94;
+
+   // Design Variables
+   Des_T4.eq_rhs = "2650.0"; // Material Limit = 2710 deg R
+   Des_Thrust.eq_rhs = "200.0";
+
+   real Nc_in = 55000.0;
+   ShH.Nmech = Nc_in; // Update mdl file for on-design
+
+   // Temperature Schedule (line as equatioon instead of table lookup T(alt))
+   //real altitudes[] = {0,5000,10000,15000,20000,25000,30000,35000,40000};
+   //real temps[] = {1300, 1200, 1100, 1000, 900, ...}
+
+   // Speed Schedule

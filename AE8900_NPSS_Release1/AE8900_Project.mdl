@@ -1,0 +1,166 @@
+//
+//------------------------------------------------------------------------
+//                                                                       |
+//   File Name:     AE8900_Project.mdl                                   |
+//   Date(s):       5/10/2026    										 |
+//   Author:        Connor Churko                                        |
+//   Description:   Turbojet Engine Model                                |
+//                                                                       |
+//------------------------------------------------------------------------
+
+//FlightConditions --> Inlet --> Compressor --> Burner --> Turbine --> Nozzle
+//FuelStart --> Burner
+//Compressor --> Bleed --> <Fuel Pressurization>
+
+//Add subelement definition to read nozzle maps
+#include <nozzle_read_cdth.int>
+#include <nozzle_read_cv.int>
+
+setThermoPackage("GasTbl"); // Pratt & Whitney Thermo Calculations
+
+Element FlightConditions Amb {
+    alt = 0.0; // Design point altitude
+    MN = 0.0; // Design point Mach
+    W = 7.0;
+}
+
+Element Inlet InEng {
+    Fl_O.MN = 0.45; //0.60; // Mass Flow Out Speed
+    
+    // Single base ram pressure ramRecoveryFlightConditions
+    eRamBase = 0.950; 
+    // PqP_in may be used to update eRam (run file)
+
+    // Define Ram Pressure Recovery Table 
+	//Subelement ramRecovery S_rec {
+	//	eRamDes = 0.9970;  
+	//	Table TB_rec( real Mach ) {
+	//		Mach = { 0.000,  0.025,  0.100,  0.200,  0.250,  0.300,  0.400,  0.500,  0.600,  0.700,  0.900 }
+	//		etar = { 0.993,  0.996,  0.995,  0.993,  0.9925, 0.992,  0.998,  0.998,  0.997,  0.997,  0.997 } 
+	//	}
+	//}	
+}
+
+Element Compressor CmpH {
+    //#include <CmpH.map> // Include compressor map
+    #include <APC1_mod.map> //Centrifugal Compressor Map
+    Fl_O.MN = 0.30;//45;
+
+    // Used from SFTF model CmpH
+    S_map.RlineMap = 2.0000;
+    S_map.NcDes = 1.00;
+	S_map.PRdes = 2.00;
+	S_map.effDes = 0.90;
+
+	//InterStageBleedOutPort  B010 {
+	//	//fracBldWork = 0.45;
+	//	//fracBldP = 0.5000;
+	//	fracBldW = 0.015;
+	//}
+}
+
+Element Diffuser Diff {
+    dPqP = 0.01; // 1% pressure drop
+}
+
+Element FuelStart Fuel {
+    Tfuel = 518.67; // Fuel storage temperature
+    Pfuel = 14.696; // Fuel storage pressure
+    LHV   = 18486.7;// Lower Heating Value of Fuel (JP-10 = 43.0 MJ/kg)
+    //LHV_in may be used to update value (run file)
+}
+
+Element Burner BrnPri {
+    FAR = 0.05; // Initial Value (will be solved for)
+    effBase = 0.995; // Adiabatic burner efficiency
+    dPqPBase = 0.05; // Duct friction pressure drop
+    Fl_O.MN = 0.10; // Output mass flow speed
+
+    /*
+    int idExceedStoich = 82004299;
+    ESOregCreate(idExceedStoich, WARNING, "Burner Conditions Exceed Stoichiometric", TRUE);
+    ESOreport(idExceedStoich, WARNING, "Burner Conditions Exceed Stoichiometric");
+    ESOregSetActive( idExceedStoich, FALSE); //Deactivate constraint warning
+    */
+}
+
+Element Turbine TrbH {
+    #include <TrbH.map> // Includes high pressure turbine map
+
+    Fl_O.MN = 0.30;
+
+    FlowStation FS41;
+
+    // SFTF Value (Reusing Turbine)
+    S_map.effDes = 0.9200;
+	S_map.parmMap = 5.280;
+	S_map.parmGeomDes = 1.0;
+	S_map.parmMapDes = 4.800;
+	S_map.parmNcDes = 100.0;
+}
+
+Element Nozzle NozPri {
+    switchType = "CONIC"; // Choose Nozzle Geometry: CON_DIV, CONIC, FIXED
+	switchCoef = "CV"; // Determine method of ideal gross thrust correcting: CV, CFG
+	Cang = 0.997; // Nozzle exit flow angle coefficient (Used when switchOef = "CV")
+
+    // Add table to lookup Nozzle Throat Discharge Coeff based on Nozzle Pressure Ratio Variable
+	Table DischargeCoeff( real PR ) { 
+		PR =   {1.0, 1.08, 1.25, 1.6, 2, 2.25,  2.5,   3.0,  4.0, 5.0, 7.0}
+		CdTh = {0.89, 0.907, 0.922, 0.945, 0.96, 0.966, 0.968, 0.97, 0.9725, 0.974, 0.975}
+		PR.interp = "linear";
+	}
+
+    // Socket: Returns discharge coefficient at the throat
+	Subelement CDTH S_CdTh {  
+	}
+
+    // Add table to lookup Nozzle Velocity Coeff based on Nozzle Pressure Ratio Variable
+	Table VelCoeff( real PR ) { 
+		PR = {1.0,  2.1, 2.6444, 3.1889, 3.7333, 4.2778, 4.8222, 5.3667, 5.9111, 6.4556, 7.0}
+		Cv = {0.9962, 0.9952, 0.9936, 0.9886, 0.9825, 0.9757, 0.9691, 0.9631, 0.9574, 0.952, 0.947}
+		PR.interp = "linear";
+	} 
+
+    // Socket: Returns nozzle thrust correction due to velocity variations at exit
+	Subelement CVELOCITY S_Cv { 
+	}
+
+    // Location of exhaust static pressure in the model
+	PsExhName = "Amb.Ps";
+}
+
+Element Shaft ShH {
+    ShaftInputPort HPC, HPT;
+
+    HPX = 0.0;
+    Nmech = 55000.0;
+}
+
+Element FlowEnd Fend {
+} // Terminate Core Flow Stream
+
+Element EngPerf Eng {
+} // Calculates overall engine performance results
+
+// ==============================================================
+// Link Ports
+// ==============================================================
+// Link Core Flow Stream
+linkPorts( "Amb.Fl_O"       	, "InEng.Fl_I"          , "FS1"   ); 
+linkPorts( "InEng.Fl_O"			, "CmpH.Fl_I"			, "FS2"   );
+linkPorts( "CmpH.Fl_O"          , "Diff.Fl_I"           , "FS31"  );
+linkPorts( "Diff.Fl_O"          , "BrnPri.Fl_I"         , "FS32"  );
+linkPorts( "BrnPri.Fl_O"		, "TrbH.Fl_I"			, "FS4"   );
+linkPorts( "TrbH.Fl_O"			, "NozPri.Fl_I"			, "FS5"	  );
+linkPorts( "NozPri.Fl_O"		, "Fend.Fl_I"			, "FS9"   );
+
+// Link Shafts
+linkPorts( "TrbH.Sh_O"          , "ShH.HPT"            , "HPTwork" ); 
+linkPorts( "CmpH.Sh_O"          , "ShH.HPC"            , "HPCwork" ); 
+
+// Fuel Ports
+linkPorts( "Fuel.Fu_O"          , "BrnPri.Fu_I"        ,"FS35" );
+
+
+

@@ -1,0 +1,161 @@
+//
+//------------------------------------------------------------------------
+//                                                                       |
+//   File Name:     AE8900_Project.mdl                                   |
+//   Date(s):       8/5/2026    										 |
+//   Author:        Connor Churko                                        |
+//   Description:   Turbojet Engine Model Executive File                 |
+//                                                                       |
+//------------------------------------------------------------------------
+
+// Print Start Time of Sim
+cout << "\n\nSTART RUN: TIME = "<< timeOfDay << "\n\n";
+#include <AE8900_Project.mdl>
+
+string Limit_Flag = "NONE";
+string SPEC_DAY = "STD";
+
+//----------------------------------------------------------------------------
+//                          User-Defined Elements
+//----------------------------------------------------------------------------
+#include <print_macros.fnc>
+#include <Turbojet.fnc>
+#include <SupportFuncs.fnc>
+//#include <Control.cmp> // Functions to calculate controls of engine RPM
+
+//----------------------------------------------------------------------------
+//                           Output Data Viewers 
+//----------------------------------------------------------------------------
+#include <AE8900_Project.view>
+#include <EngineDeck.row>
+
+//----------------------------------------------------------------------------
+//  Initiate Variables
+//----------------------------------------------------------------------------
+#include <vars.list>
+
+
+// Begin On-Design Analysis
+cout << "------------------------------------\n"; 
+cout << "        RUNNING DESIGN POINT        \n"; 
+cout << "------------------------------------\n"; 
+
+setOption ("switchDes", "DESIGN");
+autoSolverSetup(); //MUST CALL autosolver setup before adding solver variables because autosolversetup() clears the solver
+solver.defaultTolerance = 0.00000005;
+solver.defaultToleranceType = "FRACTIONAL";  //ABSOLUTE
+solver.maxJacobians = 800;
+solver.maxIterations = 2000;
+solver.defaultDxLimit = 0.05;
+
+// Set Up Solver to Vary W1 for Fn
+solver.addIndependent ( "Des_Airflow" );
+solver.addDependent ( "Des_Thrust" );
+
+// Set Up Solver to Vary FAR for Tt4
+solver.addIndependent ( "Burner_FAR" );
+solver.addDependent ( "Des_T4" );
+
+printIndependents();
+printDependents();
+verify();
+run();
+pv.display();
+printPride();
+
+cout << "Nc = " << CmpH.Nc << endl;
+
+// Simple Compressor Diameter Calculation
+real ht = 0.28; // hub-to-tip Ratio
+real D_cmp = sqrt((4*CmpH.Fl_I.Aphy) / (PI*(1-ht**2)));
+real CmpH_OD = 2*sqrt(CmpH.Fl_I.Aphy/PI);
+
+// Output Compressure Pressure Ratios
+cout << "OPR = " << CmpH.Fl_O.Pt/CmpH.Fl_I.Pt << endl;
+cout << "W1 = " << Amb.W << endl;
+cout << "FAR = " << BrnPri.FAR << endl;
+cout << "D_cmpH = " << D_cmp << " in" << endl;
+cout << "CmpH_OD = " << CmpH_OD << " in" << endl;
+
+system("pause");
+
+// Design Tt4 lends to core size. Takeoff thrust set by core power.
+// Increase design point Tt4 (TOC), decrease core size and thus decrease thrust at takeoff
+
+/*
+int idExceedStoich = 82004299;
+//ESOregCreate (2004299, 8, "above stoich", 0, 0, 1);
+//int yes = ESOregExists(2004299);
+string yes = ESOregGetDescription(2004299);
+cout << yes << endl;
+*/
+
+ESOregSetActive( 2004299, TRUE); //Activate constraint warning
+
+string defErrs[];
+
+//quit();
+
+//----------------------------------------------------------------------------
+//      BEGIN OFF-DESIGN
+//----------------------------------------------------------------------------
+cout << "Running Off Design\n\n";
+setOption ("switchDes", "OFFDESIGN");
+autoSolverSetup();
+solver.defaultTolerance = 0.00000005;
+solver.defaultToleranceType = "FRACTIONAL";  //ABSOLUTE
+solver.maxJacobians = 800;
+solver.maxIterations = 2000;
+solver.defaultDxLimit = 0.01;
+
+// Don't Save to Engine Deck for Testing
+deckUpdate=0;
+
+//----------------------------------------------------------------------------
+//      Convergence Run
+//----------------------------------------------------------------------------
+RunMaxThrust();
+
+
+cout << "Testing Thrust Rating..." << endl;
+//----------------------------------------------------------------------------
+//      Stepping Up to Cruise Condition
+//----------------------------------------------------------------------------
+Amb.alt = 0.00000; Amb.MN = 0.00; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 1000.00; Amb.MN = 0.05; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 2500.00; Amb.MN = 0.10; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 5000.00; Amb.MN = 0.20; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 10000.0; Amb.MN = 0.30; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 15000.0; Amb.MN = 0.40; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 20000.0; Amb.MN = 0.50; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 25000.0; Amb.MN = 0.55; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 30000.0; Amb.MN = 0.60; Amb.dTs = 0.00; RunMaxThrust();
+
+//----------------------------------------------------------------------------
+//      Test Thrust Rating
+//----------------------------------------------------------------------------
+CheckThrustRating(Eng.Fn);
+
+//----------------------------------------------------------------------------
+//      Stepping Down to SLS
+//----------------------------------------------------------------------------
+Amb.alt = 25000.0; Amb.MN = 0.55; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 20000.0; Amb.MN = 0.50; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 15000.0; Amb.MN = 0.40; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 10000.0; Amb.MN = 0.30; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 5000.00; Amb.MN = 0.20; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 2500.00; Amb.MN = 0.10; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 1000.00; Amb.MN = 0.05; Amb.dTs = 0.00; RunMaxThrust();
+Amb.alt = 0.00000; Amb.MN = 0.00; Amb.dTs = 0.00; RunMaxThrust();
+
+system("pause");
+
+//----------------------------------------------------------------------------
+//     Running Engine Deck
+//----------------------------------------------------------------------------
+cout << "Running Engine Deck" << endl;
+CASE = 0;
+RunFullEngineDeck();
+
+
+cout << "COMPLETED RUN:  TIME = "<< timeOfDay << endl;

@@ -1,0 +1,477 @@
+#ifndef __TURBINENEPPMAP_mod__
+#define __TURBINENEPPMAP_mod__
+
+// ****************************************************************************
+// * NASA Glenn Research Center
+// * 21000 Brookpark Rd
+// * Cleveland, OH 44135
+// *
+// ****************************************************************************
+
+#include <InterpIncludes.ncp>
+
+extern real WpIn;
+extern real NpBase;
+extern real Fl_I.Pt;
+extern real Fl_I.Tt;
+extern real Fl_I.gamt;
+extern real PRbase;
+extern real eff;
+
+class TurbineNeppMap_mod extends Subelement {
+
+//------------------------------------------------------------
+//     ******* DOCUMENTATION *******
+//------------------------------------------------------------
+
+  title = "";
+
+  description = isA() + " manages the calculation of turbine performance for efficiency based maps.";
+
+
+  usageNotes = isA() + 
+" 
+
+- This subelement manages the turbine performance calculations for
+an efficiency based map.  It is responsible for matching the unscaled
+map data based on design data supplied by the user.  Additionally,
+it is also responsible for performing the overall turbine mass
+balance.  The turbine default solver independent and dependent are
+located at this level.
+
+- This subelement has three sockets that perform the actual performance
+calculations.  The map socket calculates the unscaled turbine
+performance based on the user supplied maps.  The humidity effects
+socket calculates adjustment factors based on changes in humidity.
+The Reynolds effects socket calculates the adjustment factor based on
+changes in Reynolds number.
+
+- The subelement operates in both DESIGN and OFF-DESIGN mode.  In DESIGN
+mode, the subelement will take the user supplied efficiency and determine
+a scalar to match it to the map value.  In addition, the subelement
+will determine a scalar that will match the incoming flow with the 
+map flow.  Finally, the subelement will determine a scalar to match
+the design pressure ratio with the map pressure ratio.  The design 
+pressure ratio is usually set by the solver.  It is determined by
+matching the power balance between the turbines and compressors on a 
+shaft.  If OFF-DESIGN mode, the subelement will determine values of
+corrected flow and efficiency for input values of pressure ratio using
+the scalars calculated in DESIGN mode.  Once again, the pressure ratio 
+is set by the solver.  Additionally, the solver will also balance out 
+the weight flow error. ";
+
+  background = "";
+
+//------------------------------------------------------------
+//     ******* SETUP VARIABLES ********
+//------------------------------------------------------------
+
+  real a_parmGeom {
+    value = 0;  IOstatus = INPUT;  units = NONE;
+    description = "Adder on geometric parameter";
+  }
+  real a_parmMap {
+    value = 0;  IOstatus = INPUT;  units = NONE;
+    description = "Adder on map parameter";
+  }
+  real a_RNI {
+    value = 0;  IOstatus = INPUT;  units = NONE;
+    description = "Adder on Reynolds Number Index";
+  }
+  real effDes {
+    value = 0;  IOstatus = INPUT;  units = NONE;
+    description = "Design point adiabatic efficiency";
+  }
+  real effMap {
+    value = 0;  IOstatus = OUTPUT;  units = NONE;
+    description = "Map adiabatic efficiency, calculated by S_eff";
+  }
+  real gamMap {
+    value = 0;  IOstatus = INPUT;  units = NONE;
+    description = "Map gamma";
+  }
+  real gamtIn {
+    value = 0;  IOstatus = OUTPUT;  units = NONE;
+    description = "Turbine inlet gamma";
+  }
+  real NpMap {
+    value = 0;  IOstatus = OUTPUT;  units = NONE;
+    description = "Map percent corrected design speed, passed to S_eff";
+  }
+  real parmGeom {
+    value = 0;  IOstatus = INPUT;  units = NONE;
+    description = "Geometric parameter (used to represent variable geometry or swirl)";
+  }
+  real parmGeomDes {
+    value = 0;  IOstatus = INPUT;  units = NONE;
+    description = "Design geometric parameter (see parmGeom)";
+  }
+  real parmGeomMap {
+    value = 0;  IOstatus = OUTPUT;  units = NONE;
+    description = "Map geometric parameter (see parmGeom)";
+  }
+  real parmMap {
+    value = 0;  IOstatus = INPUT;  units = NONE;
+    description = "Map Parameter (used by efficiency subelement to read the map)";
+  }
+  real parmMapDes {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Design Map Parameter (see parmMap)";
+  }
+  real parmNcDes {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Design corrected speed";
+  }
+  real PRmap {
+    value = 1;  IOstatus = OUTPUT;  units = NONE;
+    description = "Map pressure ratio, calculated from S_eff, passed to S_hum";
+  }
+  real PtMap {
+    value = 0;  IOstatus = INPUT;  units = PSIA;
+    description = "Map total pressure";
+  }
+  real TtMap {
+    value = 0;  IOstatus = INPUT;  units = PSIA;
+    description = "Map total pressure";
+  }
+  real Rmap {
+    value = 0;  IOstatus = INPUT;  units = BTU_PER_LBM_R;
+    description = "Map gas constant ";
+  }
+  real RNI {
+    value = 0;  IOstatus = OUTPUT;  units = NONE;
+    description = "Reynolds Number Index";
+  }
+  real RNIloc {
+    value = 0;  IOstatus = INPUT;  units = NONE;
+    description = "Reynolds Number Index";
+  }
+  real RNImap {
+    value = 0;  IOstatus = INPUT;  units = NONE;
+    description = "Map Reynolds Number Index";
+  }
+
+//   real RtInput {
+//     value = 0;  IOstatus = OUTPUT;  units = BTU_PER_LBM_R;
+//     description = "Turbine Inlet Gas Constant";
+//   }
+  real s_dPqP {
+    value = 1;  IOstatus = OUTPUT;  units = NONE;
+    description = "Pressure ratio design scalar";
+  }
+  real s_eff {
+    value = 1;  IOstatus = OUTPUT;  units = NONE;
+    description = "Adiabatic efficiency design scalar";
+  }
+  real s_effRe {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Adiabatic efficiency Reynolds effect scalar, calculated by S_Re";
+  }
+  real s_Np {
+    value = 1;  IOstatus = OUTPUT;  units = NONE;
+    description = "Corrected speed design scalar";
+  }
+  real s_NpGamR {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Corrected speed gammaR scalar, calculated by S_eff";
+  }
+  real s_parmGeom {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Geometric parameter design scalar";
+  }
+  real s_parmMap {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Map parameter design scalar";
+  }
+  real s_PRgamR {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Pressure ratio gammaR scalar, calculated by S_hum.";
+  }
+  real s_RNI {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Reynolds Number Index scalar";
+  }
+  real s_Wp {
+    value = 1;  IOstatus = OUTPUT;  units = NONE;
+    description = "Corrected flow design scalar";
+  }
+  real s_WpGamR {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Corrected flow gammaR scalar, calculated by S_hum";
+  }
+  real s_WpRe {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Corrected flow Reynolds scalar, calculated by S_Re";
+  }
+  real WpOut {
+    value = 1;  IOstatus = INPUT;  units = LBM_PER_SEC;
+    description = "Socket corrected Flow";
+  }
+  real WpMap {
+    value = 0;  IOstatus = OUTPUT;  units = LBM_PER_SEC;
+    description = "Map corrected flow, calculated by S_eff";
+  }
+
+
+//------------------------------------------------------------
+//   ******* OPTION VARIABLE SETUP *******
+//------------------------------------------------------------
+
+  Option switchDes {
+    allowedValues = { DESIGN, OFFDESIGN };
+    description = "Design /off-design option switch";
+    rewritableValues = FALSE;  // Enables converter optimization.
+  }
+
+
+//------------------------------------------------------------
+// ****** SETUP PORTS, FLOW STATIONS, SOCKETS, TABLES ********
+//------------------------------------------------------------
+
+// FLUID PORTS
+
+// FUEL PORTS
+
+// BLEED PORTS
+
+// THERMAL PORTS
+
+// MECHANICAL PORTS
+
+// FLOW STATIONS
+
+// SOCKETS
+  addInterface(TURBINE_MAP);
+
+  Socket S_eff {
+    allowedValues = { "WpMap", "effMap" };
+    description = "Efficiency Map Socket";
+    socketType = TURBINE_EFFICIENCY_MAP;
+  }
+
+  Socket S_hum {
+    allowedValues = { "s_NpGamR", "s_WpGamR", "s_PRgamR" };
+    description = "Humidity Effects Socket";
+    socketType = TURBINE_HUMIDITY_EFFECTS;
+  }
+
+  Socket S_TurbRe {
+    allowedValues = { "s_effRe", "s_WpRe" };
+    description = "Re Number Effects Socket";
+    socketType = TURBINE_REYNOLDS_EFFECTS;
+  }
+
+// TABLES
+
+
+//------------------------------------------------------------
+// ******* INTERNAL SOLVER SETUP *******
+//------------------------------------------------------------
+
+//------------------------------------------------------------
+//  ******  ADD SOLVER INDEPENDENTS & DEPENDENTS  ******
+//------------------------------------------------------------
+
+  Independent ind_parmMap {
+    varName = "parmMap";
+    description = "Turbine operating point independent";
+  }
+
+  Dependent dep_errWp {
+    eq_lhs = "WpIn";
+    eq_rhs = "WpOut";
+    description = "Flow error dependent";
+  }
+
+//------------------------------------------------------------
+// ******* VARIABLE CHANGED METHODOLOGY *******
+//------------------------------------------------------------
+  void variableChanged( string name, any oldVal ) {
+	 
+    if( name == "switchDes" ) {
+      ind_parmMap.autoSetup = TRUE  ;
+	   
+      if( switchDes == DESIGN ){
+	effDes.IOstatus = INPUT ;
+	parmGeomDes.IOstatus = INPUT ;
+	parmMapDes.IOstatus = INPUT ;
+	parmNcDes.IOstatus = INPUT ;
+	s_Np.IOstatus = OUTPUT ;
+	s_dPqP.IOstatus = OUTPUT ;
+	s_eff.IOstatus = OUTPUT ;
+	s_Wp.IOstatus = OUTPUT ;
+		  
+	dep_errWp.autoSetup = FALSE ; 
+      }
+      else if( switchDes == OFFDESIGN ){
+	effDes.IOstatus = OUTPUT ;
+	parmGeomDes.IOstatus = OUTPUT ;
+	parmMapDes.IOstatus = OUTPUT ;
+	parmNcDes.IOstatus = OUTPUT ;
+	s_Np.IOstatus =  INPUT ;
+	s_dPqP.IOstatus = INPUT ;
+	s_eff.IOstatus = INPUT ;
+	s_Wp.IOstatus = INPUT ;
+	
+	dep_errWp.autoSetup = TRUE ; 
+      }
+    }
+  }
+  
+  
+//------------------------------------------------------------
+//   ******* PERFORM ENGINEERING CALCULATIONS *******
+//------------------------------------------------------------
+  
+  void calculate() {
+	 
+    //------------------------------------------------------------
+    // get variables from parent
+    //------------------------------------------------------------
+	 real WpIn_local = WpIn;
+	 real NpBase_local = NpBase;
+	 
+    //------------------------------------------------------------
+    // create locals for variables returned to parent
+    //------------------------------------------------------------
+	 real eff_ret, PRbase_ret;
+	 
+    //------------------------------------------------------------
+    // get flow station & flow properties
+    //------------------------------------------------------------
+    real PtIn = Fl_I.Pt;
+    real TtIn = Fl_I.Tt;
+    gamtIn = Fl_I.gamt;
+// 	 RtInput  = Fl_I.Rt;  // move down to TurbineHumidityEffects
+
+    //------------------------------------------------------------
+    // calculate flow temperature and pressure references
+    //------------------------------------------------------------ 
+    real delta = PtIn / C_PSTD ;
+    real theta = TtIn / C_TSTD ;
+	 
+    //------------------------------------------------------------
+    // calculate the Socket values of the turbine map and 
+	 // geometry parameters
+    //------------------------------------------------------------ 
+    real parmMapBase  = parmMap * s_parmMap + a_parmMap;
+    real parmGeomBase = parmGeom * s_parmGeom + a_parmGeom;
+	 
+    //------------------------------------------------------------ 
+    // set parameter Map and Geometry to there respective Socket variables
+    //------------------------------------------------------------ 
+    WpOut = WpIn_local; 
+    PRbase_ret= parmMapBase;    
+    real PgeomBase = parmGeomBase;
+	 
+    //------------------------------------------------------------
+    // calculate the Reynolds Number Index with scaling 
+    //------------------------------------------------------------
+    RNI = (( delta ) /( theta ** 1.1) ) ;
+
+   // RNI = ( ( TtMap + 198.72 ) * delta ) / ( ( C_TSTD + 198.72 ) * theta * theta ) ;
+    RNI = ( RNI * s_RNI ) + a_RNI;
+
+    //------------------------------------------------------------
+    // set PRbase in parent so that the humidity socket can use PRbase 
+    //------------------------------------------------------------
+	 PRbase = PRbase_ret;
+
+    //------------------------------------------------------------
+    // if a Humidity Effects SubSubElement is in the Socket execute
+    // it otherwise set the Humidity Effects Corrections to 1.0 
+    //------------------------------------------------------------
+    if (!S_hum.isEmpty() ) {
+      S_hum.execute();
+    }	 
+    else{
+      s_NpGamR  = 1.0 ;
+      s_WpGamR  = 1.0 ;
+      s_PRgamR = 1.0 ;
+    }    
+	 
+    //------------------------------------------------------------
+    // Check for DESIGN or OFFDESIGN path
+    //------------------------------------------------------------
+	 
+    if( switchDes == DESIGN ){
+
+      //------------------------------------------------------------
+      // set the Parameter Design Values to internal Variables
+      //------------------------------------------------------------
+      parmGeomMap = parmGeomDes;
+      PRmap = parmMapDes;
+      NpMap = parmNcDes;
+		
+      //------------------------------------------------------------
+      // if an Efficiency Map is in the socket execute it
+      //------------------------------------------------------------
+      if( !S_eff.isEmpty() ) {
+		  S_eff.execute(); 
+      }
+		
+      //---------------------------------------------------------------------
+      // if a Reynolds Number Effects Socket is in place execute it
+      // otherwise set the Reynolds Number Effects Correction Terms to 1.0
+      //---------------------------------------------------------------------
+      if( !S_TurbRe.isEmpty() ){
+		  S_TurbRe.execute();
+      }
+      else{
+		  s_effRe = 1.0;
+		  s_WpRe = 1.0;
+      } 
+		
+      //---------------------------------------------------------------
+      // calculate the design point scalars on speed, deltaP over P,
+      // adiabatic eff and corrected flow
+      //---------------------------------------------------------------		
+      s_Np = NpMap /( s_NpGamR * NpBase_local * sqrt( C_TSTD ) );
+      s_dPqP   = ( PRmap - 1.0 )/( s_PRgamR * PRbase_ret- 1.0 );
+      s_eff = effDes /( s_WpRe * effMap );
+      s_Wp    = WpIn_local /( s_WpGamR * s_WpRe * WpMap );
+    }
+	 
+    //-----------------------------------------------------------------
+    // calculate the base map values of Pressure ratio and Corrected 
+	 // Speed to be used in the table call to retrieve the base map
+	 // values of Corrected Flow and Adiabatic Eff
+    //-----------------------------------------------------------------
+    PRmap = s_dPqP * ( s_PRgamR * PRbase_ret- 1.0 ) + 1.0;
+    NpMap  = s_Np * s_NpGamR * NpBase_local *  sqrt( C_TSTD );
+    parmGeomMap = PgeomBase;
+	 
+    //------------------------------------------------------------
+    // if a efficiency map is in the socket execute it
+    //------------------------------------------------------------
+    if( !S_eff.isEmpty() ){
+      S_eff.execute();
+    }
+	 
+    //--------------------------------------------------------------------
+    // if a Reynolds Number Effects Socket is in place execute it
+    // otherwise set the Reynolds Number Effects Correction Terms to 1.0
+    //--------------------------------------------------------------------
+    if (!S_TurbRe.isEmpty() ) {
+      S_TurbRe.execute();
+    }
+    else {
+      s_effRe = 1.0;
+      s_WpRe = 1.0;
+    }
+
+    //------------------------------------------------------------
+    // determine scaled values of Wp and eff
+    //------------------------------------------------------------
+    WpOut = s_Wp * s_WpGamR * s_WpRe * WpMap;
+    eff_ret = s_eff * s_effRe * effMap;    
+	 
+    //------------------------------------------------------------
+    // return variables to parent:  eff, PRbase
+	 //------------------------------------------------------------
+	 eff=eff_ret;
+	 PRbase = PRbase_ret;
+  } 
+}
+
+#endif

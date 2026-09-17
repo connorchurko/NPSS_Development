@@ -1,0 +1,174 @@
+#ifndef TURBINEREYNOLDSEFFECTS_MOD__
+#define TURBINEREYNOLDSEFFECTS_MOD__
+
+// ****************************************************************************
+// * NASA Glenn Research Center
+// * 21000 Brookpark Rd
+// * Cleveland, OH 44135
+// *
+// ****************************************************************************
+
+#include <InterpIncludes.ncp>
+
+extern real RNI;
+extern real s_effRe;
+extern real s_WpRe;
+extern real effMap;
+extern real PtMap; 
+extern real TtMap; 
+extern real RNImap;
+
+
+class TurbineReynoldsEffects_mod extends Subelement {
+
+//------------------------------------------------------------
+//     ******* DOCUMENTATION *******
+//------------------------------------------------------------
+
+  title = "";
+
+  description = isA() + " calculates the effects of changing Reynolds number on performance 
+for turbine efficiency maps.";
+
+  usageNotes = isA() + 
+" 
+
+- This subelement is designed to calculate the effects of changing
+Reynolds numbers on a turbine efficiency map.  The higher level
+element supplies the value of the Reynolds Number Index (RNI) and   
+effMap.  The subelement returns an efficiency scalar and a weight  
+flow scalar representing the Reynolds effects.  These scalars are 
+used to adjust the map calculated values.
+
+- The subelement works by taking the current value of RNI and
+comparing it to the map value of RNI.  The map value of RNI is
+calculated from input values of Pt and Tt representing the 
+conditions for which the map was generated.  The two values of 
+RNI are used to determine scale factors on the efficiency and 
+corrected flow.
+
+- The methods used to calculate these corrections are based on
+correlations derived in the Reynolds Correction Appendix.";
+
+
+  background = "";
+
+//------------------------------------------------------------
+//     ******* SETUP VARIABLES ********
+//------------------------------------------------------------
+
+  real ClossRe {
+    value = 0;  IOstatus = OUTPUT;  units = NONE;
+    description = "Reynolds Loss Coefficient";
+  }
+
+  real expEff {
+    value = 0.1;  IOstatus = INPUT;  units = NONE;
+    description = "Exponent on Adiabatic Efficiency Scaling";
+  }
+  real expFlow {
+    value = 1;  IOstatus = INPUT;  units = NONE;
+    description = "Exponent on Flow Scaling ";
+  }
+
+
+//------------------------------------------------------------
+//   ******* OPTION VARIABLE SETUP *******
+//------------------------------------------------------------
+
+//------------------------------------------------------------
+// ****** SETUP PORTS, FLOW STATIONS, SOCKETS, TABLES ********
+//------------------------------------------------------------
+
+// FLUID PORTS
+
+// FUEL PORTS
+
+// BLEED PORTS
+
+// THERMAL PORTS
+
+// MECHANICAL PORTS
+
+// FLOW STATIONS
+
+// SOCKETS
+  addInterface(TURBINE_REYNOLDS_EFFECTS);
+
+// TABLES
+
+
+//------------------------------------------------------------
+// ******* INTERNAL SOLVER SETUP *******
+//------------------------------------------------------------
+
+//------------------------------------------------------------
+//  ******  ADD SOLVER INDEPENDENTS & DEPENDENTS  ******
+//------------------------------------------------------------
+
+//------------------------------------------------------------
+// ******* VARIABLE CHANGED METHODOLOGY *******
+//------------------------------------------------------------
+
+//------------------------------------------------------------
+//   ******* PERFORM ENGINEERING CALCULATIONS *******
+//------------------------------------------------------------
+
+  void calculate() {
+
+	 //------------------------------------------------------------
+    // get variables from parent
+    //------------------------------------------------------------
+
+	 real RNI_local = RNI;
+
+
+    //------------------------------------------------------------
+    // create locals for variables returned to parent
+    //------------------------------------------------------------
+	 real s_effRe_ret, s_WpRe_ret;
+
+    //------------------------------------------------------------
+	 // calculate map Reynolds number index
+    //------------------------------------------------------------
+    if ( switchDes == DESIGN) {
+        TtMap = Fl_I.Tt;
+        PtMap = Fl_I.Pt; 
+        real deltaMap = PtMap / C_PSTD;
+        real thetaMap = TtMap / C_TSTD;
+        RNImap = (deltaMap / (thetaMap ** 1.1) );
+    }	 
+    	 
+    //------------------------------------------------------------
+    // calculate Reynolds Correction On Corrected Speed & scalar on 
+// efficiency for Reynolds effects
+    //------------------------------------------------------------
+
+    ClossRe = ( (RNImap / RNI_local) ** expEff);
+	 
+    s_effRe_ret = ( 1.0 - (1.0 - effMap) * ClossRe) / effMap;
+	 
+    //------------------------------------------------------------
+	 //  Reynolds Correction on Corrected Flow
+	 //------------------------------------------------------------
+	 s_WpRe_ret = s_effRe_ret ** expFlow;
+
+    //------------------------------------------------------------
+    // return variables to parent:  s_effRe, s_WpRe
+	 //------------------------------------------------------------
+	 s_effRe = s_effRe_ret;
+	 s_WpRe = s_WpRe_ret;
+/*
+cout << "Fl_I.Tt " << Fl_I.Tt <<"\n";
+cout << "PtMap " << PtMap <<"\n";
+cout << "TtMap " << TtMap <<"\n";
+cout << "RNImap " << RNImap <<"\n";
+cout << "RNI_local " << RNI_local <<"\n";
+cout << "ClossRe " << ClossRe <<"\n";
+cout << "effMap " << effMap <<"\n";
+cout << "s_effRe " << s_effRe <<"\n";*/
+  }  
+}
+
+#endif
+
