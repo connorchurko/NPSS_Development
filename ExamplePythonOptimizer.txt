@@ -1,0 +1,455 @@
+import subprocess
+import re
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from scipy.optimize import minimize_scalar, differential_evolution
+import os
+import json
+from dataclasses import dataclass, field
+from typing import Optional
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1. CONFIGURATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class OptimizationConfig:
+    # ── NPSS Settings ─────────────────────────────────────────────────────────
+    npss_executable : str   = "npss"                  # path to NPSS executable
+    npss_input_file : str   = "cycle.run"             # main NPSS run file
+    npss_output_file: str   = "cycle_output.out"      # NPSS output file
+    npss_model_file : str   = "cycle.mdl"             # NPSS model file
+
+    # ── Design Variables ──────────────────────────────────────────────────────
+    pr_min          : float = 10.0                    # min compressor PR
+    pr_max          : float = 50.0                    # max compressor PR
+    pr_initial      : float = 25.0                    # initial guess
+
+    # ── Constraints ───────────────────────────────────────────────────────────
+    tt4_limit       : float = 3400.0                  # TT4 limit [R]
+    tt4_safety      : float = 50.0                    # safety margin [R]
+
+    # ── Optimizer Settings ────────────────────────────────────────────────────
+    method          : str   = "bounded"               # 'bounded', 'differential_evolution'
+    tolerance       : float = 1e-4
+    max_iterations  : int   = 100
+
+    # ── Output ────────────────────────────────────────────────────────────────
+    results_file    : str   = "optimization_results.json"
+    plot_file       : str   = "optimization_results.html"
+    verbose         : bool  = True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2. NPSS INTERFACE — reads/writes NPSS files and runs the simulation
+# ══════════════════════════════════════════════════════════════════════════════
+
+class NPSSInterface:
+    def __init__(self, config: OptimizationConfig):
+        self.config = config
+        self.run_count = 0
+
+    # ── Write PR value into NPSS input file ───────────────────────────────────
+    def set_pressure_ratio(self, pr: float):
+        """Modify the NPSS run file to set the compressor pressure ratio."""
+        with open(self.config.npss_input_file, 'r') as f:
+            content = f.read()
+
+        # Replace PR value — adjust regex to match your NPSS variable name
+        content = re.sub(
+            r'(Compressor\.PR\s*=\s*)[\d.]+',
+            f'\\g<1>{pr:.4f}',
+            content
+        )
+
+        with open(self.config.npss_input_file, 'w') as f:
+            f.write(content)
+
+    # ── Run NPSS ──────────────────────────────────────────────────────────────
+    def run_npss(self) -> bool:
+        """Execute NPSS and return True if successful."""
+        try:
+            result = subprocess.run(
+                [self.config.npss_executable, self.config.npss_input_file],
+                capture_output=True, text=True, timeout=120
+            )
+            if self.config.verbose:
+                print(f"    NPSS stdout: {result.stdout[-200:]}" if result.stdout else "")
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            print("  [ERROR] NPSS timed out")
+            return False
+        except FileNotFoundError:
+            print("  [ERROR] NPSS executable not found")
+            return False
+
+    # ── Parse NPSS Output ─────────────────────────────────────────────────────
+    def parse_output(self) -> Optional[dict]:
+        """
+        Parse NPSS output file and extract key performance values.
+        Adjust the regex patterns to match your NPSS output format.
+        """
+        try:
+            with open(self.config.npss_output_file, 'r') as f:
+                content = f.read()
+
+            def extract(pattern, text):
+                match = re.search(pattern, text)
+                return float(match.group(1)) if match else None
+
+            results = {
+                # ── Adjust these patterns to match your NPSS output ──────────
+                'thrust'    : extract(r'Fn\s*=\s*([-\d.]+)',          content),
+                'tt4'       : extract(r'Burner\.Tt_out\s*=\s*([\d.]+)', content),
+                'sfc'       : extract(r'SFC\s*=\s*([-\d.]+)',         content),
+                'wf'        : extract(r'Burner\.Wfuel\s*=\s*([\d.]+)', content),
+                'eta_comp'  : extract(r'Compressor\.eff\s*=\s*([\d.]+)', content),
+                'eta_turb'  : extract(r'Turbine\.eff\s*=\s*([\d.]+)', content),
+                'tt3'       : extract(r'Compressor\.Tt_out\s*=\s*([\d.]+)', content),
+                'pt3'       : extract(r'Compressor\.Pt_out\s*=\s*([\d.]+)', content),
+                'work_comp' : extract(r'Compressor\.pwr\s*=\s*([\d.]+)', content),
+                'work_turb' : extract(r'Turbine\.pwr\s*=\s*([\d.]+)', content),
+            }
+
+            # Check all critical values were parsed
+            if results['thrust'] is None or results['tt4'] is None:
+                print("  [WARNING] Could not parse critical NPSS outputs")
+                return None
+
+            return results
+
+        except FileNotFoundError:
+            print(f"  [ERROR] Output file '{self.config.npss_output_file}' not found")
+            return None
+
+    # ── Single NPSS Evaluation ────────────────────────────────────────────────
+    def evaluate(self, pr: float) -> Optional[dict]:
+        """Set PR, run NPSS, parse and return results."""
+        self.run_count += 1
+        if self.config.verbose:
+            print(f"  Run #{self.run_count:03d} | PR = {pr:.4f}")
+
+        self.set_pressure_ratio(pr)
+
+        if not self.run_npss():
+            return None
+
+        results = self.parse_output()
+        if results:
+            results['pr'] = pr
+            if self.config.verbose:
+                print(f"           | Thrust = {results['thrust']:.2f} lbf"
+                      f" | TT4 = {results['tt4']:.1f} R"
+                      f" | SFC = {results.get('sfc', 0):.4f}")
+        return results
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. OPTIMIZER — wraps NPSS evaluations into an objective function
+# ══════════════════════════════════════════════════════════════════════════════
+
+class CycleOptimizer:
+    def __init__(self, config: OptimizationConfig, npss: NPSSInterface):
+        self.config  = config
+        self.npss    = npss
+        self.history = []            # stores every evaluation
+        self.best    = None
+
+    # ── Constraint check ──────────────────────────────────────────────────────
+    def tt4_feasible(self, tt4: float) -> bool:
+        return tt4 <= (self.config.tt4_limit - self.config.tt4_safety)
+
+    # ── Penalty function for TT4 violation ───────────────────────────────────
+    def tt4_penalty(self, tt4: float) -> float:
+        violation = max(0.0, tt4 - (self.config.tt4_limit - self.config.tt4_safety))
+        return 1e6 * violation          # large penalty per degree over limit
+
+    # ── Objective function (minimized → maximize thrust) ─────────────────────
+    def objective(self, pr: float) -> float:
+        results = self.npss.evaluate(pr)
+
+        if results is None:
+            return 1e9                  # penalize failed runs heavily
+
+        thrust = results['thrust']
+        tt4    = results['tt4']
+
+        # Penalized objective: maximize thrust, subject to TT4 constraint
+        penalty   = self.tt4_penalty(tt4)
+        objective = -thrust + penalty   # negative because we minimize
+
+        results['objective'] = objective
+        results['feasible']  = self.tt4_feasible(tt4)
+        self.history.append(results)
+
+        # Track best feasible solution
+        if results['feasible']:
+            if self.best is None or thrust > self.best['thrust']:
+                self.best = results.copy()
+                print(f"  ★ New best: PR={pr:.4f} | Thrust={thrust:.2f} | TT4={tt4:.1f}")
+
+        return objective
+
+    # ── Sweep PR over a range (brute force / mapping) ─────────────────────────
+    def sweep(self, n_points: int = 20) -> list:
+        """Evaluate NPSS over a uniform PR sweep — useful for initial mapping."""
+        print(f"\n{'='*60}")
+        print(f"  PR SWEEP  ({n_points} points from {self.config.pr_min} to {self.config.pr_max})")
+        print(f"{'='*60}")
+
+        pr_values = np.linspace(self.config.pr_min, self.config.pr_max, n_points)
+        sweep_results = []
+
+        for pr in pr_values:
+            results = self.npss.evaluate(pr)
+            if results:
+                results['feasible'] = self.tt4_feasible(results['tt4'])
+                sweep_results.append(results)
+                self.history.append(results)
+
+        return sweep_results
+
+    # ── Run optimizer ─────────────────────────────────────────────────────────
+    def optimize(self) -> dict:
+        print(f"\n{'='*60}")
+        print(f"  OPTIMIZATION START")
+        print(f"  Method: {self.config.method}")
+        print(f"  PR range: [{self.config.pr_min}, {self.config.pr_max}]")
+        print(f"  TT4 limit: {self.config.tt4_limit} R")
+        print(f"{'='*60}\n")
+
+        if self.config.method == "bounded":
+            # ── Scipy bounded scalar minimization ─────────────────────────────
+            result = minimize_scalar(
+                self.objective,
+                bounds=(self.config.pr_min, self.config.pr_max),
+                method='bounded',
+                options={'xatol': self.config.tolerance,
+                         'maxiter': self.config.max_iterations}
+            )
+            opt_pr = result.x
+
+        elif self.config.method == "differential_evolution":
+            # ── Global optimizer — good for multimodal landscapes ──────────────
+            result = differential_evolution(
+                self.objective,
+                bounds=[(self.config.pr_min, self.config.pr_max)],
+                tol=self.config.tolerance,
+                maxiter=self.config.max_iterations,
+                seed=42
+            )
+            opt_pr = result.x[0]
+
+        else:
+            raise ValueError(f"Unknown method: {self.config.method}")
+
+        print(f"\n{'='*60}")
+        print(f"  OPTIMIZATION COMPLETE")
+        if self.best:
+            print(f"  Optimal PR     : {self.best['pr']:.4f}")
+            print(f"  Max Thrust     : {self.best['thrust']:.2f} lbf")
+            print(f"  TT4 at optimum : {self.best['tt4']:.1f} R  (limit: {self.config.tt4_limit} R)")
+            print(f"  SFC at optimum : {self.best.get('sfc', 'N/A')}")
+        print(f"  Total NPSS runs: {self.npss.run_count}")
+        print(f"{'='*60}\n")
+
+        return self.best
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. RESULTS MANAGER — saves and loads results
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ResultsManager:
+    def __init__(self, config: OptimizationConfig):
+        self.config = config
+
+    def save(self, history: list, best: dict):
+        data = {'best': best, 'history': history}
+        with open(self.config.results_file, 'w') as f:
+            json.dump(data, f, indent=2)
+        print(f"Results saved to {self.config.results_file}")
+
+    def load(self) -> dict:
+        with open(self.config.results_file, 'r') as f:
+            return json.load(f)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. PLOTTER — interactive Plotly dashboard
+# ══════════════════════════════════════════════════════════════════════════════
+
+class OptimizationPlotter:
+    def __init__(self, config: OptimizationConfig):
+        self.config = config
+
+    def plot(self, history: list, best: dict):
+        # Sort history by PR for clean line plots
+        history = sorted(history, key=lambda x: x['pr'])
+
+        pr      = [r['pr']     for r in history]
+        thrust  = [r['thrust'] for r in history]
+        tt4     = [r['tt4']    for r in history]
+        sfc     = [r.get('sfc', None) for r in history]
+        feasible= [r['feasible'] for r in history]
+
+        colors = ['green' if f else 'red' for f in feasible]
+
+        fig = make_subplots(
+            rows=3, cols=2,
+            subplot_titles=(
+                'Thrust vs PR',       'TT4 vs PR',
+                'SFC vs PR',          'Thrust vs TT4',
+                'Objective vs PR',    'Feasibility Map',
+            ),
+            vertical_spacing=0.12,
+            horizontal_spacing=0.10,
+        )
+
+        # ── 1. Thrust vs PR ───────────────────────────────────────────────────
+        fig.add_trace(go.Scatter(
+            x=pr, y=thrust, mode='lines+markers',
+            marker=dict(color=colors, size=6),
+            line=dict(color='royalblue', width=1.5),
+            name='Thrust'), row=1, col=1)
+        if best:
+            fig.add_trace(go.Scatter(
+                x=[best['pr']], y=[best['thrust']],
+                mode='markers', marker=dict(color='gold', size=14, symbol='star'),
+                name='Optimum'), row=1, col=1)
+
+        # ── 2. TT4 vs PR ──────────────────────────────────────────────────────
+        fig.add_trace(go.Scatter(
+            x=pr, y=tt4, mode='lines+markers',
+            marker=dict(color=colors, size=6),
+            line=dict(color='tomato', width=1.5),
+            name='TT4'), row=1, col=2)
+        # TT4 limit line
+        fig.add_hline(y=self.config.tt4_limit,
+                      line=dict(color='red', dash='dash', width=2),
+                      annotation_text=f"TT4 Limit ({self.config.tt4_limit} R)",
+                      row=1, col=2)
+        fig.add_hline(y=self.config.tt4_limit - self.config.tt4_safety,
+                      line=dict(color='orange', dash='dot', width=1.5),
+                      annotation_text="Safety Margin",
+                      row=1, col=2)
+
+        # ── 3. SFC vs PR ──────────────────────────────────────────────────────
+        if any(s is not None for s in sfc):
+            fig.add_trace(go.Scatter(
+                x=pr, y=sfc, mode='lines+markers',
+                marker=dict(color=colors, size=6),
+                line=dict(color='mediumpurple', width=1.5),
+                name='SFC'), row=2, col=1)
+
+        # ── 4. Thrust vs TT4 (Pareto-style) ──────────────────────────────────
+        fig.add_trace(go.Scatter(
+            x=tt4, y=thrust, mode='markers',
+            marker=dict(color=pr, colorscale='Viridis', size=8,
+                        colorbar=dict(title='PR', x=1.02),
+                        showscale=True),
+            text=[f"PR={p:.2f}" for p in pr],
+            name='Thrust vs TT4'), row=2, col=2)
+        fig.add_vline(x=self.config.tt4_limit,
+                      line=dict(color='red', dash='dash'),
+                      row=2, col=2)
+
+        # ── 5. Objective vs PR ────────────────────────────────────────────────
+        obj = [r.get('objective', -r['thrust']) for r in history]
+        fig.add_trace(go.Scatter(
+            x=pr, y=obj, mode='lines+markers',
+            marker=dict(color='darkcyan', size=6),
+            line=dict(color='darkcyan', width=1.5),
+            name='Objective'), row=3, col=1)
+
+        # ── 6. Feasibility map ────────────────────────────────────────────────
+        feas_thrust = [t for t, f in zip(thrust, feasible) if f]
+        feas_pr     = [p for p, f in zip(pr,     feasible) if f]
+        infeas_thrust = [t for t, f in zip(thrust, feasible) if not f]
+        infeas_pr     = [p for p, f in zip(pr,     feasible) if not f]
+
+        fig.add_trace(go.Scatter(
+            x=feas_pr, y=feas_thrust, mode='markers',
+            marker=dict(color='green', size=8, symbol='circle'),
+            name='Feasible'), row=3, col=2)
+        fig.add_trace(go.Scatter(
+            x=infeas_pr, y=infeas_thrust, mode='markers',
+            marker=dict(color='red', size=8, symbol='x'),
+            name='Infeasible'), row=3, col=2)
+        if best:
+            fig.add_trace(go.Scatter(
+                x=[best['pr']], y=[best['thrust']],
+                mode='markers', marker=dict(color='gold', size=14, symbol='star'),
+                name='Optimum'), row=3, col=2)
+
+        # ── Layout ────────────────────────────────────────────────────────────
+        fig.update_layout(
+            title=dict(
+                text=f"NPSS Cycle Optimization Results  |  "
+                     f"Optimal PR = {best['pr']:.3f}  |  "
+                     f"Max Thrust = {best['thrust']:.1f} lbf  |  "
+                     f"TT4 = {best['tt4']:.1f} R",
+                font=dict(size=14), x=0.5),
+            height=1000, width=1300,
+            showlegend=True,
+            plot_bgcolor='white', paper_bgcolor='white',
+        )
+        fig.update_xaxes(showgrid=True, gridcolor='rgba(0,0,0,0.1)')
+        fig.update_yaxes(showgrid=True, gridcolor='rgba(0,0,0,0.1)')
+
+        # Axis labels
+        axis_labels = {
+            'xaxis':  'PR [-]',    'yaxis':  'Thrust [lbf]',
+            'xaxis2': 'PR [-]',    'yaxis2': 'TT4 [R]',
+            'xaxis3': 'PR [-]',    'yaxis3': 'SFC [lbm/hr/lbf]',
+            'xaxis4': 'TT4 [R]',   'yaxis4': 'Thrust [lbf]',
+            'xaxis5': 'PR [-]',    'yaxis5': 'Objective [-]',
+            'xaxis6': 'PR [-]',    'yaxis6': 'Thrust [lbf]',
+        }
+        fig.update_layout(**{k: dict(title=v) for k, v in axis_labels.items()})
+
+        fig.write_html(self.config.plot_file)
+        fig.show()
+        print(f"Plot saved to {self.config.plot_file}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. MAIN — wire everything together
+# ══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    # ── Configure ─────────────────────────────────────────────────────────────
+    config = OptimizationConfig(
+        npss_executable  = "npss",
+        npss_input_file  = "cycle.run",
+        npss_output_file = "cycle_output.out",
+        pr_min           = 10.0,
+        pr_max           = 50.0,
+        pr_initial       = 25.0,
+        tt4_limit        = 3400.0,
+        tt4_safety       = 50.0,
+        method           = "bounded",      # or "differential_evolution"
+        verbose          = True,
+    )
+
+    # ── Initialize ────────────────────────────────────────────────────────────
+    npss      = NPSSInterface(config)
+    optimizer = CycleOptimizer(config, npss)
+    results   = ResultsManager(config)
+    plotter   = OptimizationPlotter(config)
+
+    # ── Step 1: Sweep to map the design space ─────────────────────────────────
+    optimizer.sweep(n_points=20)
+
+    # ── Step 2: Optimize ──────────────────────────────────────────────────────
+    best = optimizer.optimize()
+
+    # ── Step 3: Save & Plot ───────────────────────────────────────────────────
+    if best:
+        results.save(optimizer.history, best)
+        plotter.plot(optimizer.history, best)
+
+
+if __name__ == "__main__":
+    main()
